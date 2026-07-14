@@ -1,0 +1,9 @@
+{
+  "id": "portable-cloud-sync",
+  "name": "Portable Cloud Sync",
+  "version": "0.1.0-beta",
+  "minAppVersion": "1.0.0",
+  "description": "A hassle-free and fast FTP connection plugin that synchronizes your storage servers with Obsidian",
+  "author": "RRechz",
+  "isDesktopOnly": false
+}
