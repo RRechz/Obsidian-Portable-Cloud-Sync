@@ -34,7 +34,3 @@ Navigate to the plugin settings to configure your FTP connection:
 ## Important Note on File Names (Architecture)
 
 This plugin uses a **flat folder structure** on the remote server. It does not replicate your local Obsidian folder hierarchy. Therefore, **all your markdown file names must be unique**. If you have `Work/Note.md` and `Personal/Note.md`, they will overwrite each other on the FTP server.
-
-## License
-
-This project is licensed under the GPL-v3.0 License.
