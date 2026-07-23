@@ -21,7 +21,7 @@ const i18n = {
         ftpUser: 'Username',
         ftpPassword: 'Password',
         targetFolder: 'Target Folder',
-        targetFolderDesc: 'The main folder on the server to store .md notes (e.g., Obsidian)',
+        targetFolderDesc: 'Leave empty to sync directly to the FTP server root. Otherwise, use a folder name such as Obsidian.',
         syncInterval: 'Sync Interval (min)',
         language: 'Language',
         languageDesc: 'Choose the plugin interface language. (Note: Command palette names require an app restart to update).',
@@ -44,7 +44,7 @@ const i18n = {
         ftpUser: 'Kullanıcı Adı',
         ftpPassword: 'Şifre',
         targetFolder: 'Hedef Klasör',
-        targetFolderDesc: 'Sunucuda .md notlarının barındırılacağı ana klasör (Örn: Obsidian)',
+        targetFolderDesc: 'Boş bırakılırsa FTP sunucusunun ana dizinine senkronize edilir. Değilse, Obsidian gibi bir klasör adı kullanın.',
         syncInterval: 'Senkronizasyon Aralığı (dk)',
         language: 'Dil',
         languageDesc: 'Eklenti arayüz dilini seçin. (Not: Komut paletindeki isimlerin güncellenmesi için uygulamanın yeniden başlatılması gerekir).',
@@ -79,7 +79,7 @@ const DEFAULT_SETTINGS: PluginSettings = {
     ftpPort: 2121,
     ftpUser: '',
     ftpPassword: '',
-    syncFolder: 'Obsidian',
+    syncFolder: '',
     syncInterval: 5,
     language: 'en'
 };
@@ -128,6 +128,18 @@ export default class PortableCloudSync extends Plugin {
         return client;
     }
 
+    private getRemoteFolderPath(): string {
+        return (this.settings.syncFolder || '').trim().replace(/^\/+|\/+$/g, '');
+    }
+
+    private async enterRemoteFolder(client: ftp.Client, targetFolder: string) {
+        await client.cd('/');
+        if (targetFolder) {
+            await client.ensureDir(targetFolder);
+            await client.cd(targetFolder);
+        }
+    }
+
     async syncToCloud() {
         if (this.isSyncing) return;
         this.isSyncing = true;
@@ -139,11 +151,8 @@ export default class PortableCloudSync extends Plugin {
             client = await this.getFTPClient();
             new Notice(t(lang, 'uploadStarting'));
 
-            const targetFolder = this.settings.syncFolder.replace(/^\/|\/$/g, '');
-
-            await client.cd('/');
-            await client.ensureDir(targetFolder);
-            await client.cd(targetFolder);
+            const targetFolder = this.getRemoteFolderPath();
+            await this.enterRemoteFolder(client, targetFolder);
 
             const remoteList = await client.list();
             const remoteFilesMap = new Map<string, number>();
@@ -221,23 +230,26 @@ export default class PortableCloudSync extends Plugin {
             new Notice(t(lang, 'downloadStarting'));
 
             let count = 0;
-            const targetFolder = this.settings.syncFolder.replace(/^\/|\/$/g, '');
+            const targetFolder = this.getRemoteFolderPath();
 
-            await client.cd('/');
-            
-            const rootItems = await client.list();
-            const hasObsidianFolder = rootItems.some(item => item.name === targetFolder && item.isDirectory);
+            if (targetFolder) {
+                await client.cd('/');
+                const rootItems = await client.list();
+                const hasTargetFolder = rootItems.some(item => item.name === targetFolder && item.isDirectory);
 
-            if (!hasObsidianFolder) {
-                new Notice(t(lang, 'folderNotFound', targetFolder));
-                if (client && !client.closed) {
-                    client.close();
+                if (!hasTargetFolder) {
+                    new Notice(t(lang, 'folderNotFound', targetFolder));
+                    if (client && !client.closed) {
+                        client.close();
+                    }
+                    this.isSyncing = false;
+                    return;
                 }
-                this.isSyncing = false;
-                return;
-            }
 
-            await client.cd(targetFolder);
+                await client.cd(targetFolder);
+            } else {
+                await client.cd('/');
+            }
 
             const list = await client.list();
             const localMarkdownFiles = this.app.vault.getMarkdownFiles();
