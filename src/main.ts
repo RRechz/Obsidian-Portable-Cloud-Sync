@@ -54,13 +54,11 @@ const i18n = {
 };
 
 // --- Translation Helper ---
-// Explicitly types the language and key to prevent TypeScript indexing errors.
 const t = (lang: 'en' | 'tr', key: keyof typeof i18n['en'], arg?: any): string => {
     const langMap = i18n[lang] || i18n['en'];
     const value = langMap[key];
     
     if (typeof value === 'function') {
-        // Force TypeScript to accept the dynamic function signature
         return (value as (arg: any) => string)(arg);
     }
     return value as string;
@@ -73,7 +71,7 @@ interface PluginSettings {
     ftpPassword: string;
     syncFolder: string;
     syncInterval: number;
-    language: 'en' | 'tr'; // Language preference stored in settings
+    language: 'en' | 'tr';
 }
 
 const DEFAULT_SETTINGS: PluginSettings = {
@@ -88,17 +86,13 @@ const DEFAULT_SETTINGS: PluginSettings = {
 
 export default class PortableCloudSync extends Plugin {
     settings: PluginSettings = DEFAULT_SETTINGS;
-    private syncTimer: NodeJS.Timeout | null = null;
-    
-    // Mutex lock to prevent race conditions when sync intervals and manual syncs overlap
+    private syncTimer: number | null = null;
     private isSyncing: boolean = false;
 
     async onload() {
         await this.loadSettings();
         this.addSettingTab(new PortableCloudSyncSettingTab(this.app, this));
 
-        // Commands register with the language set at startup. 
-        // Changes to the language will require an app restart for these palette names to update.
         this.addCommand({ 
             id: 'sync-to-cloud', 
             name: t(this.settings.language, 'syncToCloudCmd'), 
@@ -122,9 +116,6 @@ export default class PortableCloudSync extends Plugin {
         await this.saveData(this.settings); 
     }
 
-    /**
-     * Initializes and configures the FTP client.
-     */
     private async getFTPClient() {
         const client = new ftp.Client();
         await client.access({
@@ -132,7 +123,7 @@ export default class PortableCloudSync extends Plugin {
             port: this.settings.ftpPort,
             user: this.settings.ftpUser,
             password: this.settings.ftpPassword,
-            secure: false // Traffic is routed locally or over a secure VPN (Tailscale)
+            secure: false
         });
         return client;
     }
@@ -141,21 +132,19 @@ export default class PortableCloudSync extends Plugin {
         if (this.isSyncing) return;
         this.isSyncing = true;
         
-        const client = await this.getFTPClient();
         const lang = this.settings.language;
+        let client: ftp.Client | null = null;
         
         try {
+            client = await this.getFTPClient();
             new Notice(t(lang, 'uploadStarting'));
 
-            // Sanitize target folder input to construct an absolute remote path
             const targetFolder = this.settings.syncFolder.replace(/^\/|\/$/g, '');
 
-            // Ensure absolute navigation to avoid recursive traps on limited FTP servers
             await client.cd('/');
             await client.ensureDir(targetFolder);
             await client.cd(targetFolder);
 
-            // Fetch the metadata of existing remote files for differential synchronization
             const remoteList = await client.list();
             const remoteFilesMap = new Map<string, number>();
 
@@ -185,7 +174,6 @@ export default class PortableCloudSync extends Plugin {
 
                 let shouldUpload = false;
 
-                // Compare timestamps. Upload if missing remotely or explicitly modified locally (+2s buffer).
                 if (remoteModTime === undefined) {
                     shouldUpload = true;
                 } else if (localModTime > remoteModTime + 2000) {
@@ -195,11 +183,9 @@ export default class PortableCloudSync extends Plugin {
                 if (shouldUpload) {
                     const content = await this.app.vault.read(file);
                     
-                    // Route through local OS temp directory to handle buffer stream correctly
                     const tempPath = path.join(require('os').tmpdir(), file.name);
                     fs.writeFileSync(tempPath, content);
 
-                    // Upload into the flat structure inside the target directory
                     await client.uploadFrom(tempPath, file.name);
                     fs.unlinkSync(tempPath);
 
@@ -216,8 +202,9 @@ export default class PortableCloudSync extends Plugin {
             new Notice(t(lang, 'uploadError') + (err.message || err));
             console.error(err);
         } finally {
-            // Always close the socket to free resources and prevent server bans
-            client.close();
+            if (client && !client.closed) {
+                client.close();
+            }
             this.isSyncing = false;
         }
     }
@@ -226,10 +213,11 @@ export default class PortableCloudSync extends Plugin {
         if (this.isSyncing) return;
         this.isSyncing = true;
 
-        const client = await this.getFTPClient();
         const lang = this.settings.language;
+        let client: ftp.Client | null = null;
 
         try {
+            client = await this.getFTPClient();
             new Notice(t(lang, 'downloadStarting'));
 
             let count = 0;
@@ -237,13 +225,14 @@ export default class PortableCloudSync extends Plugin {
 
             await client.cd('/');
             
-            // Check if the target folder actually exists before proceeding
             const rootItems = await client.list();
             const hasObsidianFolder = rootItems.some(item => item.name === targetFolder && item.isDirectory);
 
             if (!hasObsidianFolder) {
                 new Notice(t(lang, 'folderNotFound', targetFolder));
-                client.close();
+                if (client && !client.closed) {
+                    client.close();
+                }
                 this.isSyncing = false;
                 return;
             }
@@ -255,7 +244,6 @@ export default class PortableCloudSync extends Plugin {
 
             for (const item of list) {
                 if (item.isFile && item.name.endsWith('.md')) {
-                    // Match by file name only, allowing local files to reside in any subfolder
                     const localFile = localMarkdownFiles.find(f => f.name === item.name);
                     let shouldDownload = false;
 
@@ -289,7 +277,6 @@ export default class PortableCloudSync extends Plugin {
                         fs.unlinkSync(tempPath);
 
                         if (!localFile) {
-                            // Automatically drops new files into the vault root
                             await this.app.vault.create(item.name, content);
                         } else {
                             await this.app.vault.modify(localFile, content);
@@ -308,19 +295,23 @@ export default class PortableCloudSync extends Plugin {
             new Notice(t(lang, 'downloadError') + (err.message || err));
             console.error(err);
         } finally {
-            client.close();
+            if (client && !client.closed) {
+                client.close();
+            }
             this.isSyncing = false;
         }
     }
 
-    private startAutoSync() {
+    public startAutoSync() {
         if (this.syncTimer) clearInterval(this.syncTimer);
-        this.syncTimer = setInterval(async () => {
+        this.syncTimer = window.setInterval(async () => {
             if (!this.isSyncing) {
                 await this.syncFromCloud();
                 await this.syncToCloud();
             }
         }, this.settings.syncInterval * 60 * 1000);
+        
+        this.registerInterval(this.syncTimer);
     }
 }
 
@@ -332,7 +323,7 @@ class PortableCloudSyncSettingTab extends PluginSettingTab {
         this.plugin = plugin;
     }
 
-display() {
+    display() {
         const { containerEl } = this;
         const lang = this.plugin.settings.language;
 
@@ -349,7 +340,7 @@ display() {
                 .onChange(async (value: string) => {
                     this.plugin.settings.language = value as 'en' | 'tr';
                     await this.plugin.saveSettings();
-                    this.display(); // Force a re-render of the settings tab to update texts instantly
+                    this.display();
                 }));
 
         new Setting(containerEl)
@@ -381,6 +372,10 @@ display() {
         new Setting(containerEl)
             .setName(t(lang, 'syncInterval'))
             .addText(text => text.setValue(this.plugin.settings.syncInterval.toString())
-            .onChange(v => { this.plugin.settings.syncInterval = parseInt(v) || 5; this.plugin.saveSettings(); }));
+            .onChange(v => { 
+                this.plugin.settings.syncInterval = parseInt(v) || 5; 
+                this.plugin.saveSettings();
+                this.plugin.startAutoSync();
+            }));
     }
 }
